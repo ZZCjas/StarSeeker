@@ -119,9 +119,10 @@ This project is licensed under the MIT License – see the LICENSE file for deta
 
 ### 截图
 
-<img width="2052" height="1254" alt="image" src="https://github.com/user-attachments/assets/5a909856-a69d-48b0-ad69-87bc9f5d76ad" />
+<img width="2052" height="1254" alt="image" src="https://github.com/user-attachments/assets/336b25aa-6060-4d94-babb-f54e9a6f6480" />
 
-<img width="2052" height="1254" alt="image" src="https://github.com/user-attachments/assets/d9f1807f-fdeb-463b-9c7a-e56af404be39" />
+<img width="2052" height="1254" alt="image" src="https://github.com/user-attachments/assets/9cd70d1a-67c3-4261-9ceb-e4881a259156" />
+
 
 ### 编译与运行
 
