@@ -5,7 +5,6 @@
 #include <map>
 #include <cstdlib>
 #include "language.h"
-
 struct ObserverConfig {
     double latitude;   // degree, north positive
     double longitude;  // degree, east positive
@@ -17,7 +16,6 @@ struct ObserverConfig {
     bool showLabels;      // show object labels
     double labelMagLimit; // only show labels for stars brighter than this mag
 };
-
 static inline void trim_string(std::string &s) {
     while (!s.empty() && (s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
         s.pop_back();
@@ -26,7 +24,6 @@ static inline void trim_string(std::string &s) {
         ++start;
     if (start > 0) s = s.substr(start);
 }
-
 static inline ObserverConfig load_config(const std::string &filename = "config.ini") {
     ObserverConfig cfg;
     cfg.latitude = 39.9;
@@ -38,10 +35,8 @@ static inline ObserverConfig load_config(const std::string &filename = "config.i
     cfg.showHelp = true;
     cfg.showLabels = true;
     cfg.labelMagLimit = 4.0;
-
     std::ifstream file(filename);
     if (!file.is_open()) return cfg;
-
     std::string line, section;
     while (std::getline(file, line)) {
         trim_string(line);
@@ -56,7 +51,6 @@ static inline ObserverConfig load_config(const std::string &filename = "config.i
         std::string val = line.substr(eq + 1);
         trim_string(key);
         trim_string(val);
-
         if (section == "Observer") {
             if (key == "latitude") cfg.latitude = atof(val.c_str());
             else if (key == "longitude") cfg.longitude = atof(val.c_str());

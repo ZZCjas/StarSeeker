@@ -11,9 +11,9 @@
 #include "language.h"
 
 struct Camera {
-    double center_az;   // rad
+    double center_az;
     double center_alt;
-    double fov;         // rad
+    double fov;
 };
 
 // Compute star pixel size from magnitude
@@ -27,47 +27,53 @@ static inline double star_size(double mag, double fov_deg) {
     else if (mag < 5.0) base = 1.8;
     else if (mag < 6.0) base = 1.4;
     else base = 1.0;
-    // Scale slightly with zoom
     double zoom_factor = 120.0 / fov_deg;
     if (zoom_factor < 0.5) zoom_factor = 0.5;
     if (zoom_factor > 4.0) zoom_factor = 4.0;
     return base * (0.7 + 0.3 * zoom_factor);
 }
 
-// Get star color based on temperature (simplified: use magnitude as proxy)
-static inline COLORREF star_color(double mag) {
-    if (mag < 0.0) return RGB(255, 255, 240);    // very bright, white-blue
-    else if (mag < 1.0) return RGB(255, 255, 220);
-    else if (mag < 2.0) return RGB(255, 250, 200);
-    else if (mag < 3.0) return RGB(255, 245, 180);
-    else if (mag < 4.0) return RGB(255, 240, 160);
-    else if (mag < 5.0) return RGB(240, 230, 150);
-    else return RGB(200, 200, 180);
+// ============================================================
+// 【改进】恒星颜色：优先使用 B-V 颜色指数，回退到星等估计
+// ============================================================
+static inline COLORREF star_color(double mag, double bv) {
+    int r, g, b;
+    if (bv >= -1.0) {
+        // 有 B-V 数据，使用基于光谱型的颜色
+        bv_to_rgb(bv, r, g, b);
+    } else {
+        // 无 B-V 数据，用星等做粗略估计（降级方案）
+        if (mag < 0.0)       { r = 200; g = 215; b = 255; }
+        else if (mag < 1.0)  { r = 220; g = 225; b = 255; }
+        else if (mag < 2.0)  { r = 240; g = 240; b = 250; }
+        else if (mag < 3.0)  { r = 255; g = 245; b = 220; }
+        else if (mag < 4.0)  { r = 255; g = 240; b = 190; }
+        else if (mag < 5.0)  { r = 240; g = 230; b = 160; }
+        else                  { r = 210; g = 200; b = 170; }
+    }
+    return RGB(r, g, b);
 }
 
 // Get deep sky object color by subtype
 static inline COLORREF deepsky_color(DeepSkyType dst) {
     switch (dst) {
-    case DS_GALAXY:             return RGB(180, 200, 255);  // bluish
-    case DS_NEBULA:             return RGB(255, 150, 200);  // pinkish (emission)
-    case DS_OPEN_CLUSTER:       return RGB(255, 255, 200);  // yellow-white
-    case DS_GLOBULAR_CLUSTER:   return RGB(255, 220, 150);  // golden
-    case DS_PLANETARY_NEBULA:   return RGB(150, 220, 255);  // cyan-blue
-    case DS_SUPERNOVA_REMNANT:  return RGB(255, 180, 150);  // reddish
+    case DS_GALAXY:             return RGB(180, 200, 255);
+    case DS_NEBULA:             return RGB(255, 150, 200);
+    case DS_OPEN_CLUSTER:       return RGB(255, 255, 200);
+    case DS_GLOBULAR_CLUSTER:   return RGB(255, 220, 150);
+    case DS_PLANETARY_NEBULA:   return RGB(150, 220, 255);
+    case DS_SUPERNOVA_REMNANT:  return RGB(255, 180, 150);
     default:                    return RGB(180, 180, 180);
     }
 }
 
-// Draw a glowing circle (for bright stars and selected objects)
+// Draw a glowing circle
 static inline void draw_glow_circle(int cx, int cy, double radius, COLORREF color, int glow_layers = 3) {
     for (int i = glow_layers; i >= 0; --i) {
         double r = radius * (1.0 + i * 0.6);
-        int alpha = 40 + i * 20;
-        if (alpha > 200) alpha = 200;
         BYTE r_c = GetRValue(color);
         BYTE g_c = GetGValue(color);
         BYTE b_c = GetBValue(color);
-        // simulate glow by drawing larger dimmer circles
         setfillcolor(RGB(
             (int)(r_c * (0.3 + 0.7 * (1.0 - (double)i / (glow_layers + 1)))),
             (int)(g_c * (0.3 + 0.7 * (1.0 - (double)i / (glow_layers + 1)))),
@@ -79,14 +85,12 @@ static inline void draw_glow_circle(int cx, int cy, double radius, COLORREF colo
     solidcircle(cx, cy, (int)radius);
 }
 
-// Get display name based on language
 static inline const char* get_display_name(const CelestialObject& obj, LanguageId lang) {
     if (lang == LANGID_CHINESE && !obj.name_zh.empty())
         return obj.name_zh.c_str();
     return obj.name.c_str();
 }
 
-// Draw sky with all objects
 static inline void draw_sky(const std::vector<CelestialObject>& catalog,
                             double lst, double observer_lat,
                             const Camera& cam, int width, int height,
@@ -97,14 +101,10 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
     setfillcolor(BLACK);
     solidrectangle(0, 0, width, height);
 
-    // Atmospheric glow near horizon
-    double fov_deg = cam.fov * 180.0 / M_PI;
-    // Draw horizon glow gradient
+    // 地平辉光
     for (int y = 0; y < height; ++y) {
-        // Map screen y to approximate altitude
         double sy = y;
         double alt_approx;
-        // rough: center of screen is center_alt
         double dy = (height / 2.0 - sy) / (height / 2.0);
         alt_approx = cam.center_alt + dy * (cam.fov / 2.0);
         double alt_deg = alt_approx * 180.0 / M_PI;
@@ -119,33 +119,36 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
     }
 
     setbkmode(TRANSPARENT);
-	    // ========== 视锥剔除预处理 ==========
-    // 将相机中心地平坐标转换为赤道坐标，用于快速剔除
+    double aspect = (double)width / height;
+    double half_fov = cam.fov / 2.0;
+    double fov_deg = cam.fov * 180.0 / M_PI;
+
     double ra_cam, dec_cam;
     horizon_to_equatorial(cam.center_alt, cam.center_az, lst, observer_lat, ra_cam, dec_cam);
 
-    // 计算剔除阈值：屏幕对角线对应的半视场角 + 10% 余量，避免边缘天体闪烁
-    double aspect = (double)width / height;
-    double half_fov = cam.fov / 2.0;
-    double dist_threshold = half_fov * sqrt(aspect * aspect + 1.0) * 1.1;
-    double cos_dist_threshold = cos(dist_threshold); // 预计算余弦，直接比较值避免反余弦运算
-	
-    // Twinkle factor: use frame_time as seed
-    double twinkle_seed = frame_time;
+    // 【修正】小视场跳过预剔除
+    bool skip_culling = (cam.fov < 20.0 * M_PI / 180.0);
+    double cos_dist_threshold = -1.0;
+    if (!skip_culling) {
+        double dist_threshold = half_fov * sqrt(aspect * aspect + 1.0) * 1.2;
+        cos_dist_threshold = cos(dist_threshold) - 1e-6;
+    }
+
     for (size_t i = 0; i < catalog.size(); ++i) {
         const auto& obj = catalog[i];
-        // ---------- 视锥快速剔除 ----------
-        double dra = obj.ra - ra_cam;
-        double cos_dist = sin(obj.dec) * sin(dec_cam) + cos(obj.dec) * cos(dec_cam) * cos(dra);
-        if (cos_dist < cos_dist_threshold) {
-            continue; // 视场外，直接跳过所有后续计算
+
+        if (!skip_culling) {
+            double dra = obj.ra - ra_cam;
+            double cos_dist = sin(obj.dec) * sin(dec_cam) + cos(obj.dec) * cos(dec_cam) * cos(dra);
+            if (cos_dist < cos_dist_threshold) continue;
         }
-                    // 动态星等阈值：视场越小，显示越暗的星
+
         double mag_limit = 6.0 + (120.0 - fov_deg) * 0.03;
         if (obj.mag > mag_limit) continue;
+
         double alt, az;
         equatorial_to_horizon(obj.ra, obj.dec, lst, observer_lat, alt, az);
-        // Dim factor: below horizon = dimmed, above = full brightness
+
         double dim_factor = 1.0;
         bool below_horizon = false;
         if (alt < 0) {
@@ -156,20 +159,22 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
             else
                 dim_factor = 0.15;
         }
+
         double sx, sy;
         horizon_to_screen(az, alt, cam.center_az, cam.center_alt, cam.fov, width, height, sx, sy);
+
         if (sx < -20 || sx > width + 20 || sy < -20 || sy > height + 20) continue;
 
         bool is_selected = ((int)i == selected_index);
-        double fov_deg_val = cam.fov * 180.0 / M_PI;
         LanguageId lang = cfg.language;
         const char* disp_name = get_display_name(obj, lang);
 
-                if (obj.type == DEEPSKY) {
+        // ---- 绘制各类天体 ----
+        if (obj.type == DEEPSKY) {
             COLORREF ds_col_raw = deepsky_color(obj.ds_type);
-            BYTE dr = GetRValue(ds_col_raw) * dim_factor;
-            BYTE dg = GetGValue(ds_col_raw) * dim_factor;
-            BYTE db = GetBValue(ds_col_raw) * dim_factor;
+            BYTE dr = (BYTE)(GetRValue(ds_col_raw) * dim_factor);
+            BYTE dg = (BYTE)(GetGValue(ds_col_raw) * dim_factor);
+            BYTE db = (BYTE)(GetBValue(ds_col_raw) * dim_factor);
             COLORREF ds_col = RGB(dr, dg, db);
             setfillcolor(ds_col);
             if (obj.ds_type == DS_GALAXY) {
@@ -185,49 +190,40 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
             } else {
                 solidcircle((int)sx, (int)sy, 2);
             }
-            // Label for deep sky objects
-            if (cfg.showLabels && fov_deg_val < 90 && !below_horizon) {
+            if (cfg.showLabels && fov_deg < 90 && !below_horizon) {
                 settextcolor(ds_col);
                 settextstyle(13, 0, "宋体");
                 outtextxy((int)sx + 5, (int)sy - 14, disp_name);
             }
         } else if (obj.type == SUN) {
-            COLORREF sun_col = RGB(255 * dim_factor, 255 * dim_factor, 100 * dim_factor);
+            COLORREF sun_col = RGB((int)(255 * dim_factor), (int)(255 * dim_factor), (int)(100 * dim_factor));
             draw_glow_circle((int)sx, (int)sy, 7, sun_col, 5);
             if (cfg.showLabels && !below_horizon) {
                 settextcolor(sun_col);
                 settextstyle(15, 0, "宋体");
                 outtextxy((int)sx + 10, (int)sy - 8, disp_name);
             }
-        }         
-		else if (obj.type == MOON) {
+        } else if (obj.type == MOON) {
             if (obj.id >= 100) {
-                // Planetary moon: small dot like a bright star
-                double ssize = star_size(obj.mag, fov_deg_val);
-                COLORREF mcol = RGB(
-                    (int)(220 * dim_factor),
-                    (int)(220 * dim_factor),
-                    (int)(240 * dim_factor));
+                double ssize = star_size(obj.mag, fov_deg);
+                COLORREF mcol = RGB((int)(220 * dim_factor), (int)(220 * dim_factor), (int)(240 * dim_factor));
                 setfillcolor(mcol);
                 solidcircle((int)sx, (int)sy, (int)ssize);
-                
-                // Label only when zoomed in
-                if (cfg.showLabels && fov_deg_val < 30 && !below_horizon) {
+                if (cfg.showLabels && fov_deg < 30 && !below_horizon) {
                     settextcolor(RGB((int)(180 * dim_factor), (int)(180 * dim_factor), (int)(200 * dim_factor)));
                     settextstyle(12, 0, "宋体");
                     outtextxy((int)sx + 3, (int)sy + 3, disp_name);
                 }
             } else {
-                // Earth's Moon
-                COLORREF moon_col = RGB(230 * dim_factor, 230 * dim_factor, 230 * dim_factor);
+                COLORREF moon_col = RGB((int)(230 * dim_factor), (int)(230 * dim_factor), (int)(230 * dim_factor));
                 draw_glow_circle((int)sx, (int)sy, 5, moon_col, 4);
                 if (cfg.showLabels && !below_horizon) {
-                    settextcolor(RGB(200 * dim_factor, 200 * dim_factor, 200 * dim_factor));
+                    settextcolor(RGB((int)(200 * dim_factor), (int)(200 * dim_factor), (int)(200 * dim_factor)));
                     settextstyle(13, 0, "宋体");
                     outtextxy((int)sx + 8, (int)sy - 7, disp_name);
                 }
-            } 
-		} else if (obj.type == PLANET) {
+            }
+        } else if (obj.type == PLANET) {
             COLORREF pcol_raw = RGB(255, 210, 120);
             if (obj.name == "Mars") pcol_raw = RGB(255, 120, 80);
             else if (obj.name == "Jupiter") pcol_raw = RGB(255, 200, 140);
@@ -241,7 +237,7 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
                 (int)(GetRValue(pcol_raw) * dim_factor),
                 (int)(GetGValue(pcol_raw) * dim_factor),
                 (int)(GetBValue(pcol_raw) * dim_factor));
-            double psize = star_size(obj.mag, fov_deg_val) + 1.0;
+            double psize = star_size(obj.mag, fov_deg) + 1.0;
             draw_glow_circle((int)sx, (int)sy, psize, pcol, 2);
             if (cfg.showLabels && obj.mag < 6.0 && !below_horizon) {
                 settextcolor(pcol);
@@ -252,10 +248,8 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
             COLORREF sat_col = RGB((int)(200 * dim_factor), (int)(255 * dim_factor), (int)(255 * dim_factor));
             setfillcolor(sat_col);
             solidcircle((int)sx, (int)sy, 2);
-            // Small trail
             setcolor(RGB((int)(100 * dim_factor), (int)(200 * dim_factor), (int)(255 * dim_factor)));
             line((int)sx - 4, (int)sy, (int)sx + 4, (int)sy);
-            // Satellite labels always show
             if (cfg.showLabels) {
                 settextcolor(sat_col);
                 settextstyle(12, 0, "宋体");
@@ -265,25 +259,23 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
             COLORREF ast_col = RGB((int)(180 * dim_factor), (int)(170 * dim_factor), (int)(150 * dim_factor));
             setfillcolor(ast_col);
             solidcircle((int)sx, (int)sy, 2);
-            if (cfg.showLabels && fov_deg_val < 60 && !below_horizon) {
+            if (cfg.showLabels && fov_deg < 60 && !below_horizon) {
                 settextcolor(ast_col);
                 settextstyle(11, 0, "宋体");
                 outtextxy((int)sx + 4, (int)sy - 10, disp_name);
             }
         } else {
             // STAR
-            // Performance: skip very dim stars in wide FOV
-            if (fov_deg_val > 90.0 && obj.mag > 6.0) continue;
-            double ssize = star_size(obj.mag, fov_deg_val);
-            COLORREF scol_raw = star_color(obj.mag);
+            if (fov_deg > 90.0 && obj.mag > 6.0) continue;
+            double ssize = star_size(obj.mag, fov_deg);
+            COLORREF scol_raw = star_color(obj.mag, obj.bv_color);
             COLORREF scol = RGB(
                 (int)(GetRValue(scol_raw) * dim_factor),
                 (int)(GetGValue(scol_raw) * dim_factor),
                 (int)(GetBValue(scol_raw) * dim_factor));
-            // Twinkle for brighter stars (only above horizon)
             double twinkle = 1.0;
             if (obj.mag < 3.0 && !below_horizon) {
-                double seed = obj.ra * 1000.0 + obj.dec * 500.0 + twinkle_seed * 2.0;
+                double seed = obj.ra * 1000.0 + obj.dec * 500.0 + frame_time * 2.0;
                 twinkle = 0.94 + 0.06 * sin(seed * 7.3);
             }
             if (obj.mag < 2.0) {
@@ -296,7 +288,6 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
                 setfillcolor(scol);
                 solidcircle((int)sx, (int)sy, (int)(ssize * twinkle));
             }
-            // Label only for bright stars (below mag limit)
             if (cfg.showLabels && obj.mag < cfg.labelMagLimit && !below_horizon) {
                 settextcolor(RGB((int)(140 * dim_factor), (int)(140 * dim_factor), (int)(140 * dim_factor)));
                 settextstyle(12, 0, "宋体");
@@ -304,19 +295,16 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
             }
         }
 
-        // Selection highlight
+        // 选中高亮
         if (is_selected) {
             double sel_dim = below_horizon ? 0.4 : 1.0;
             setcolor(RGB(0, (int)(255 * sel_dim), (int)(128 * sel_dim)));
             setlinestyle(PS_SOLID, 1);
             circle((int)sx, (int)sy, 12);
-            // crosshair
             line((int)sx - 16, (int)sy, (int)sx - 10, (int)sy);
             line((int)sx + 10, (int)sy, (int)sx + 16, (int)sy);
             line((int)sx, (int)sy - 16, (int)sx, (int)sy - 10);
             line((int)sx, (int)sy + 10, (int)sx, (int)sy + 16);
-
-            // Show subtype for selected deep sky objects
             if (obj.type == DEEPSKY) {
                 const char* ds_type = get_ds_type_str(obj.ds_type, lang);
                 settextcolor(RGB((int)(100 * sel_dim), (int)(255 * sel_dim), (int)(180 * sel_dim)));
@@ -373,10 +361,15 @@ static bool clip_line(double &x0, double &y0, double &x1, double &y1, int w, int
     }
 }
 
+// ============================================================
+// 【改进】参考线 — 使用真黄赤交角（含章动）
+// ============================================================
 static inline void draw_sky_reference_lines(double lst, double lat, const Camera& cam,
-                                            int width, int height, LanguageId lang) {
+                                            int width, int height, LanguageId lang,
+                                            double jd) {
     const int steps = 180;
-    double eps = 23.4392911 * M_PI / 180.0;
+    // 【改进】使用真黄赤交角（含章动）
+    double eps = true_obliquity(jd);
 
     auto draw_curve = [&](const std::vector<std::pair<double, double>>& eq_points,
                           COLORREF color, int style = PS_SOLID, int thickness = 1) {
@@ -426,7 +419,7 @@ static inline void draw_sky_reference_lines(double lst, double lat, const Camera
         celestial_equator.push_back({ra, 0.0});
     }
     draw_curve(celestial_equator, RGB(0, 100, 200), PS_SOLID, 2);
-    // Label for celestial equator
+
     {
         double label_sx = -1, label_sy = -1;
         for (size_t i = 0; i < celestial_equator.size(); ++i) {
@@ -450,7 +443,7 @@ static inline void draw_sky_reference_lines(double lst, double lat, const Camera
         }
     }
 
-    // Ecliptic
+    // Ecliptic — 【改进】使用真黄赤交角
     std::vector<std::pair<double, double>> ecliptic;
     for (int i = 0; i <= steps; ++i) {
         double lambda = i * 2.0 * M_PI / steps;
@@ -460,7 +453,7 @@ static inline void draw_sky_reference_lines(double lst, double lat, const Camera
         ecliptic.push_back({ra, dec});
     }
     draw_curve(ecliptic, RGB(200, 160, 0), PS_SOLID, 2);
-    // Label for ecliptic
+
     {
         double label_sx = -1, label_sy = -1;
         for (size_t i = 0; i < ecliptic.size(); ++i) {
@@ -485,7 +478,7 @@ static inline void draw_sky_reference_lines(double lst, double lat, const Camera
     }
 
     // Galactic equator (J2000 rotation matrix)
-    double M[3][3] = {
+    double M_mat[3][3] = {
         {-0.05487556, -0.87343709, -0.48383502},
         { 0.49410945, -0.44482963,  0.74698224},
         {-0.86766615, -0.19807637,  0.45598378}
@@ -493,16 +486,16 @@ static inline void draw_sky_reference_lines(double lst, double lat, const Camera
     std::vector<std::pair<double, double>> galactic_equator;
     for (int i = 0; i <= steps; ++i) {
         double l = i * 2.0 * M_PI / steps;
-        double x = M[0][0] * cos(l) + M[0][1] * sin(l);
-        double y = M[1][0] * cos(l) + M[1][1] * sin(l);
-        double z = M[2][0] * cos(l) + M[2][1] * sin(l);
+        double x = M_mat[0][0] * cos(l) + M_mat[0][1] * sin(l);
+        double y = M_mat[1][0] * cos(l) + M_mat[1][1] * sin(l);
+        double z = M_mat[2][0] * cos(l) + M_mat[2][1] * sin(l);
         double ra = atan2(y, x);
         if (ra < 0) ra += 2.0 * M_PI;
         double dec = asin(z);
         galactic_equator.push_back({ra, dec});
     }
     draw_curve(galactic_equator, RGB(140, 140, 140), PS_DASH, 1);
-    // Label for galactic equator
+
     {
         double label_sx = -1, label_sy = -1;
         for (size_t i = 0; i < galactic_equator.size(); ++i) {
@@ -530,15 +523,15 @@ static inline void draw_sky_reference_lines(double lst, double lat, const Camera
 // Draw horizon direction markers (N/E/S/W)
 static inline void draw_horizon_markers(const Camera& cam, int width, int height, LanguageId lang) {
     struct DirMarker {
-        double az;       // radians
+        double az;
         StringId str_id;
         COLORREF color;
     };
     DirMarker markers[] = {
-        {0.0,                  STR_DIR_N, RGB(180, 180, 220)},
-        {M_PI / 2,             STR_DIR_E, RGB(180, 220, 180)},
-        {M_PI,                 STR_DIR_S, RGB(220, 180, 180)},
-        {3.0 * M_PI / 2,       STR_DIR_W, RGB(220, 200, 180)},
+        {0.0,            STR_DIR_N, RGB(180, 180, 220)},
+        {M_PI / 2,       STR_DIR_E, RGB(180, 220, 180)},
+        {M_PI,           STR_DIR_S, RGB(220, 180, 180)},
+        {3.0 * M_PI / 2, STR_DIR_W, RGB(220, 200, 180)},
     };
     setbkmode(TRANSPARENT);
     for (int i = 0; i < 4; ++i) {
@@ -549,7 +542,6 @@ static inline void draw_horizon_markers(const Camera& cam, int width, int height
             settextcolor(markers[i].color);
             settextstyle(16, 0, "宋体");
             const char* s = get_str(markers[i].str_id, lang);
-            // Center the text
             int tw = textwidth(s);
             outtextxy((int)sx - tw / 2, (int)sy - 8, s);
         }
@@ -588,26 +580,17 @@ static inline void draw_about(int width, int height, LanguageId lang) {
     int box_h = 280;
     int box_x = (width - box_w) / 2;
     int box_y = (height - box_h) / 2;
-
-    // Semi-transparent background
     setfillcolor(RGB(15, 15, 25));
     solidrectangle(box_x, box_y, box_x + box_w, box_y + box_h);
     setcolor(RGB(100, 100, 160));
     rectangle(box_x, box_y, box_x + box_w, box_y + box_h);
-
     setbkmode(TRANSPARENT);
-
-    // Title
     settextcolor(RGB(255, 220, 120));
     settextstyle(20, 0, "宋体");
     outtextxy(box_x + 20, box_y + 15, get_str(STR_ABOUT_TITLE, lang));
-
-    // Version
     settextcolor(RGB(180, 180, 200));
     settextstyle(15, 0, "宋体");
     outtextxy(box_x + 20, box_y + 45, get_str(STR_ABOUT_VERSION, lang));
-
-    // Description
     settextcolor(RGB(200, 200, 220));
     settextstyle(13, 0, "宋体");
     const char* desc_lines[] = {
@@ -628,6 +611,7 @@ static inline void draw_about(int width, int height, LanguageId lang) {
         outtextxy(box_x + 20, box_y + 70 + i * 17, desc_lines[i]);
     }
 }
+
 // Status bar at bottom
 static inline void draw_status_bar(int width, int height,
                                    const ObserverConfig& cfg,
@@ -680,26 +664,17 @@ static inline void draw_status_bar(int width, int height,
     settextcolor(RGB(180, 200, 255));
     outtextxy(280, bar_top + 14, buf);
 
-        // Selected object info
+    // Selected object info
     if (selected_obj) {
-        // 计算实时地平坐标
         double obj_alt, obj_az;
         equatorial_to_horizon(selected_obj->ra, selected_obj->dec, lst, observer_lat, obj_alt, obj_az);
-        double obj_az_deg = obj_az * 180.0 / M_PI;
         double obj_alt_deg = obj_alt * 180.0 / M_PI;
+        double obj_az_deg = obj_az * 180.0 / M_PI;
 
-        // 计算赤道坐标（赤经转小时制，赤纬带正负号）
-        double ra_hours = selected_obj->ra * 12.0 / M_PI;
-        double dec_deg = selected_obj->dec * 180.0 / M_PI;
-        char dec_sign = dec_deg >= 0 ? '+' : '-';
-        double dec_abs = fabs(dec_deg);
-
-        // 第一行：选中名称 + 距离 + 星等
-        char line1[256] = "";
-        strcat(line1, get_str(STR_SELECTED, lang));
-        strcat(line1, get_display_name(*selected_obj, lang));
-        strcat(line1, "  ");
-
+        char info[512] = "";
+        strcat(info, get_str(STR_SELECTED, lang));
+        strcat(info, get_display_name(*selected_obj, lang));
+        strcat(info, "  ");
         if (selected_obj->distance > 0) {
             char dist_str[80];
             if (selected_obj->type == SATELLITE || selected_obj->type == PLANET ||
@@ -708,43 +683,27 @@ static inline void draw_status_bar(int width, int height,
                 snprintf(dist_str, sizeof(dist_str), get_str(STR_DIST_AU, lang), selected_obj->distance);
             else
                 snprintf(dist_str, sizeof(dist_str), get_str(STR_DIST_LY, lang), selected_obj->distance);
-            strcat(line1, dist_str);
+            strcat(info, dist_str);
         } else {
-            strcat(line1, get_str(STR_DIST_UNKNOWN, lang));
+            strcat(info, get_str(STR_DIST_UNKNOWN, lang));
         }
-
         char mag_str[40];
         snprintf(mag_str, sizeof(mag_str), get_str(STR_MAG, lang), selected_obj->mag);
-        strcat(line1, mag_str);
-
+        strcat(info, mag_str);
         settextcolor(RGB(100, 255, 150));
-        settextstyle(12, 0, "宋体");
-        outtextxy(540, bar_top + 2, line1);
+        outtextxy(540, bar_top + 4, info);
 
-        // 第二行：赤道坐标（赤经 + 赤纬）
-        char line2[128];
-        snprintf(line2, sizeof(line2),
-                 "RA: %.3fh  Dec: %c%.2f°",
-                 ra_hours, dec_sign, dec_abs);
-        settextcolor(RGB(255, 200, 150));
-        outtextxy(540, bar_top + 18, line2);
-
-        // 第三行：地平坐标（方位 + 高度）
-        char line3[128];
-        snprintf(line3, sizeof(line3),
-                 "%s%.2f°  %s%.2f°",
+        char coord_str[128];
+        snprintf(coord_str, sizeof(coord_str),
+                 "%s%.2f  %s%.2f",
                  get_str(STR_AZ, lang), obj_az_deg,
                  get_str(STR_ALT, lang), obj_alt_deg);
-        // 地平线以下高度角显示红色
-        COLORREF alt_color = (obj_alt_deg >= 0) ?
-            RGB(150, 220, 255) : RGB(255, 150, 150);
-        settextcolor(alt_color);
-        outtextxy(540, bar_top + 34, line3);
+        settextcolor(RGB(150, 220, 255));
+        outtextxy(540, bar_top + 26, coord_str);
     } else {
         char info[100];
-        snprintf(info, sizeof(info), "%s%s", get_str(STR_SELECTED, lang), get_str(STR_NONE,lang));
+        snprintf(info, sizeof(info), "%s%s", get_str(STR_SELECTED, lang), get_str(STR_NONE, lang));
         settextcolor(RGB(120, 120, 140));
-        settextstyle(13, 0, "宋体");
         outtextxy(540, bar_top + 14, info);
     }
 }

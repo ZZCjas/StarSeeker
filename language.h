@@ -1,12 +1,10 @@
 #pragma once
 #include <string>
-
 enum LanguageId {
     LANGID_ENGLISH = 0,
     LANGID_CHINESE = 1,
     LANGID_COUNT
 };
-
 // String IDs for UI text
 enum StringId {
     STR_UTC_TIME = 0,
@@ -62,7 +60,6 @@ enum StringId {
     STR_DIR_W,
     STR_COUNT
 };
-
 // English strings
 static const char* g_str_en[] = {
     "UTC ",
@@ -117,7 +114,6 @@ static const char* g_str_en[] = {
     "S",
     "W",
 };
-
 // Chinese strings
 static const char* g_str_zh[] = {
     "UTC ",
@@ -172,7 +168,6 @@ static const char* g_str_zh[] = {
     "ÄÏ",
     "Î÷",
 };
-
 static inline const char* get_str(StringId id, LanguageId lang) {
     if (id < 0 || id >= STR_COUNT) return "";
     if (lang == LANGID_CHINESE) return g_str_zh[id];
