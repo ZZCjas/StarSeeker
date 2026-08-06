@@ -119,12 +119,30 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
     }
 
     setbkmode(TRANSPARENT);
+	    // ========== 视锥剔除预处理 ==========
+    // 将相机中心地平坐标转换为赤道坐标，用于快速剔除
+    double ra_cam, dec_cam;
+    horizon_to_equatorial(cam.center_alt, cam.center_az, lst, observer_lat, ra_cam, dec_cam);
 
+    // 计算剔除阈值：屏幕对角线对应的半视场角 + 10% 余量，避免边缘天体闪烁
+    double aspect = (double)width / height;
+    double half_fov = cam.fov / 2.0;
+    double dist_threshold = half_fov * sqrt(aspect * aspect + 1.0) * 1.1;
+    double cos_dist_threshold = cos(dist_threshold); // 预计算余弦，直接比较值避免反余弦运算
+	
     // Twinkle factor: use frame_time as seed
     double twinkle_seed = frame_time;
-
     for (size_t i = 0; i < catalog.size(); ++i) {
         const auto& obj = catalog[i];
+        // ---------- 视锥快速剔除 ----------
+        double dra = obj.ra - ra_cam;
+        double cos_dist = sin(obj.dec) * sin(dec_cam) + cos(obj.dec) * cos(dec_cam) * cos(dra);
+        if (cos_dist < cos_dist_threshold) {
+            continue; // 视场外，直接跳过所有后续计算
+        }
+                    // 动态星等阈值：视场越小，显示越暗的星
+        double mag_limit = 6.0 + (120.0 - fov_deg) * 0.03;
+        if (obj.mag > mag_limit) continue;
         double alt, az;
         equatorial_to_horizon(obj.ra, obj.dec, lst, observer_lat, alt, az);
         // Dim factor: below horizon = dimmed, above = full brightness
@@ -138,7 +156,6 @@ static inline void draw_sky(const std::vector<CelestialObject>& catalog,
             else
                 dim_factor = 0.15;
         }
-
         double sx, sy;
         horizon_to_screen(az, alt, cam.center_az, cam.center_alt, cam.fov, width, height, sx, sy);
         if (sx < -20 || sx > width + 20 || sy < -20 || sy > height + 20) continue;
@@ -665,16 +682,23 @@ static inline void draw_status_bar(int width, int height,
 
         // Selected object info
     if (selected_obj) {
-        // Calculate current horizontal coordinates
+        // 计算实时地平坐标
         double obj_alt, obj_az;
         equatorial_to_horizon(selected_obj->ra, selected_obj->dec, lst, observer_lat, obj_alt, obj_az);
         double obj_az_deg = obj_az * 180.0 / M_PI;
         double obj_alt_deg = obj_alt * 180.0 / M_PI;
 
-        char info[512] = "";
-        strcat(info, get_str(STR_SELECTED, lang));
-        strcat(info, get_display_name(*selected_obj, lang));
-        strcat(info, "  ");
+        // 计算赤道坐标（赤经转小时制，赤纬带正负号）
+        double ra_hours = selected_obj->ra * 12.0 / M_PI;
+        double dec_deg = selected_obj->dec * 180.0 / M_PI;
+        char dec_sign = dec_deg >= 0 ? '+' : '-';
+        double dec_abs = fabs(dec_deg);
+
+        // 第一行：选中名称 + 距离 + 星等
+        char line1[256] = "";
+        strcat(line1, get_str(STR_SELECTED, lang));
+        strcat(line1, get_display_name(*selected_obj, lang));
+        strcat(line1, "  ");
 
         if (selected_obj->distance > 0) {
             char dist_str[80];
@@ -684,30 +708,43 @@ static inline void draw_status_bar(int width, int height,
                 snprintf(dist_str, sizeof(dist_str), get_str(STR_DIST_AU, lang), selected_obj->distance);
             else
                 snprintf(dist_str, sizeof(dist_str), get_str(STR_DIST_LY, lang), selected_obj->distance);
-            strcat(info, dist_str);
+            strcat(line1, dist_str);
         } else {
-            strcat(info, get_str(STR_DIST_UNKNOWN, lang));
+            strcat(line1, get_str(STR_DIST_UNKNOWN, lang));
         }
 
         char mag_str[40];
         snprintf(mag_str, sizeof(mag_str), get_str(STR_MAG, lang), selected_obj->mag);
-        strcat(info, mag_str);
+        strcat(line1, mag_str);
 
         settextcolor(RGB(100, 255, 150));
-        outtextxy(540, bar_top + 4, info);
+        settextstyle(12, 0, "宋体");
+        outtextxy(540, bar_top + 2, line1);
 
-        // Horizontal coordinates on second line
-        char coord_str[128];
-        snprintf(coord_str, sizeof(coord_str),
+        // 第二行：赤道坐标（赤经 + 赤纬）
+        char line2[128];
+        snprintf(line2, sizeof(line2),
+                 "RA: %.3fh  Dec: %c%.2f°",
+                 ra_hours, dec_sign, dec_abs);
+        settextcolor(RGB(255, 200, 150));
+        outtextxy(540, bar_top + 18, line2);
+
+        // 第三行：地平坐标（方位 + 高度）
+        char line3[128];
+        snprintf(line3, sizeof(line3),
                  "%s%.2f°  %s%.2f°",
                  get_str(STR_AZ, lang), obj_az_deg,
                  get_str(STR_ALT, lang), obj_alt_deg);
-        settextcolor(RGB(150, 220, 255));
-        outtextxy(540, bar_top + 26, coord_str);
+        // 地平线以下高度角显示红色
+        COLORREF alt_color = (obj_alt_deg >= 0) ?
+            RGB(150, 220, 255) : RGB(255, 150, 150);
+        settextcolor(alt_color);
+        outtextxy(540, bar_top + 34, line3);
     } else {
         char info[100];
-        snprintf(info, sizeof(info), "%s%s", get_str(STR_SELECTED, lang), get_str(STR_NONE, lang));
+        snprintf(info, sizeof(info), "%s%s", get_str(STR_SELECTED, lang), get_str(STR_NONE,lang));
         settextcolor(RGB(120, 120, 140));
+        settextstyle(13, 0, "宋体");
         outtextxy(540, bar_top + 14, info);
     }
 }
